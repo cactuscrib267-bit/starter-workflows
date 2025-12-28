@@ -1,10 +1,12 @@
 scripts/
-  main.ts                       // اسکریپت اصلی (منطق GHES + rewrite)
-  workflow-check.ts             // checkWorkflows و checkWorkflow
-  workflow-rewrite.ts           // rewriteWorkflow و transformها (مثل placeholder step)
-  codeowners-types.ts           // TypeScript interfaces
-  codeowners-config.json        // تعریف JSON مالکیت مسیرها
-  codeowners-generate.ts        // ساختن .github/CODEOWNERS از JSON
-  exec.ts                       // همون exec که الان داری
+  main.ts
+  workflow-check.ts
+  checkWorkflows و checkWorkflow
+  workflow-rewrite.ts        
+   rewriteWorkflow و transform
+  codeowners-types.ts     
+  codeowners-config.json 
+  codeowners-generate.ts
+  exec.ts exec
 .github/
-  CODEOWNERS                    // خروجی نهایی (auto-generated)
+  CODEOWNERS (auto-generated)
