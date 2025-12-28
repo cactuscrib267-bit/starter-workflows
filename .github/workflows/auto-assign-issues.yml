@@ -1,15 +1,25 @@
-name: Issue assignment
+name: CI
 
 on:
-    issues:
-        types: [opened]
+  push:
+    branches:
+      - main
+  pull_request:
 
 jobs:
-    auto-assign:
-        runs-on: ubuntu-latest
-        steps:
-            - name: 'Auto-assign issue'
-              uses: pozil/auto-assign-issue@v1.11.0
-              with:
-                  assignees: phantsure,tiwarishub,anuragc617,vsvipul,bishal-pdmsft
-                  numOfAssignee: 1
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Set up Node
+        uses: actions/setup-node@v2
+        with:
+          node-version: 18
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
