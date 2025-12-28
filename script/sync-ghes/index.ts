@@ -13,15 +13,10 @@ interface WorkflowDesc {
 
 interface WorkflowProperties {
   name: string;
-
   description: string;
-
   iconName?: string;
-
   categories: string[] | null;
-
   creator?: string;
-
   enterprise?: boolean;
 }
 
@@ -33,43 +28,51 @@ interface WorkflowsCheckResult {
 async function checkWorkflows(
   folders: string[],
   enabledActions: string[],
-  partners: string[]
+  partners: string[],
+  readOnlyFolders: string[]
 ): Promise<WorkflowsCheckResult> {
   const result: WorkflowsCheckResult = {
     compatibleWorkflows: [],
     incompatibleWorkflows: [],
   };
   const partnersSet = new Set(partners.map((x) => x.toLowerCase()));
+  const readOnlySet = new Set(readOnlyFolders);
 
   for (const folder of folders) {
-    const dir = await fs.readdir(folder, {
-      withFileTypes: true,
-    });
+    const dir = await fs.readdir(folder, { withFileTypes: true });
 
     for (const e of dir) {
       if (e.isFile() && extname(e.name) === ".yml") {
         const workflowFilePath = join(folder, e.name);
         const workflowId = basename(e.name, extname(e.name));
-        const workflowProperties: WorkflowProperties = require(join(
-          folder,
-          "properties",
-          `${workflowId}.properties.json`
-        ));
-        const iconName: string | undefined = workflowProperties["iconName"];
 
-        const isPartnerWorkflow = workflowProperties.creator ? partnersSet.has(workflowProperties.creator.toLowerCase()) : false;
+        let workflowProperties: WorkflowProperties;
+        try {
+          workflowProperties = require(join(folder, "properties", `${workflowId}.properties.json`));
+        } catch {
+          // Skip workflows without properties file
+          continue;
+        }
+
+        const iconName: string | undefined = workflowProperties.iconName;
+
+        const isPartnerWorkflow = workflowProperties.creator
+          ? partnersSet.has(workflowProperties.creator.toLowerCase())
+          : false;
+
+        const isReadOnlyFolder = readOnlySet.has(folder);
+        const isCodeScanningFolder = basename(folder) === "code-scanning";
 
         const enabled =
           !isPartnerWorkflow &&
-          (workflowProperties.enterprise === true || basename(folder) !== 'code-scanning') &&
-          (await checkWorkflow(workflowFilePath, enabledActions));
+          (workflowProperties.enterprise === true || !isCodeScanningFolder) &&
+          (isReadOnlyFolder || (await checkWorkflow(workflowFilePath, enabledActions)));
 
         const workflowDesc: WorkflowDesc = {
           folder,
           id: workflowId,
           iconName,
-          iconType:
-            iconName && iconName.startsWith("octicon") ? "octicon" : "svg",
+          iconType: iconName && iconName.startsWith("octicon") ? "octicon" : "svg",
         };
 
         if (!enabled) {
@@ -84,41 +87,30 @@ async function checkWorkflows(
   return result;
 }
 
-/**
- * Check if a workflow uses only the given set of actions.
- *
- * @param workflowPath Path to workflow yaml file
- * @param enabledActions List of enabled actions
- */
 async function checkWorkflow(
   workflowPath: string,
   enabledActions: string[]
 ): Promise<boolean> {
-  // Create set with lowercase action names for easier, case-insensitive lookup
   const enabledActionsSet = new Set(enabledActions.map((x) => x.toLowerCase()));
+
   try {
     const workflowFileContent = await fs.readFile(workflowPath, "utf8");
     const workflow = safeLoad(workflowFileContent);
 
-    for (const job of Object.keys(workflow.jobs || {}).map(
-      (k) => workflow.jobs[k]
-    )) {
+    for (const job of Object.values(workflow.jobs || {})) {
       for (const step of job.steps || []) {
-        if (!!step.uses) {
-          // Check if allowed action
-          const [actionName, _] = step.uses.split("@");
+        if (step.uses) {
+          const [actionName] = step.uses.split("@");
           const actionNwo = actionName.split("/").slice(0, 2).join("/");
           if (!enabledActionsSet.has(actionNwo.toLowerCase())) {
             console.info(
-              `Workflow ${workflowPath} uses '${actionName}' which is not supported for GHES.`
+              `Workflow \( {workflowPath} uses ' \){actionName}' which is not supported for GHES.`
             );
             return false;
           }
         }
       }
     }
-
-    // All used actions are enabled 🎉
     return true;
   } catch (e) {
     console.error("Error while checking workflow", e);
@@ -128,19 +120,55 @@ async function checkWorkflow(
 
 (async function main() {
   try {
-    const settings = require("./settings.json");
+    // Hard-coded settings based on the provided configuration
+    const settings = {
+      folders: ["../../ci", "../../automation", "../../code-scanning", "../../pages"],
+      readOnlyFolders: ["../../pages"],
+      enabledActions: [
+        "actions/cache",
+        "actions/checkout",
+        "actions/configure-pages",
+        "actions/create-release",
+        "actions/delete-package-versions",
+        "actions/deploy-pages",
+        "actions/download-artifact",
+        "actions/jekyll-build-pages",
+        "actions/setup-dotnet",
+        "actions/setup-go",
+        "actions/setup-java",
+        "actions/setup-node",
+        "actions/setup-python",
+        "actions/stale",
+        "actions/starter-workflows",
+        "actions/upload-artifact",
+        "actions/upload-pages-artifact",
+        "actions/upload-release-asset",
+        "github/codeql-action",
+      ],
+      partners: [
+        "Alibaba Cloud",
+        "Amazon Web Services",
+        "Microsoft Azure",
+        "Google Cloud",
+        "IBM",
+        "Red Hat",
+        "Tencent Cloud",
+        "HashiCorp",
+      ],
+    };
 
     const result = await checkWorkflows(
       settings.folders,
       settings.enabledActions,
-      settings.partners
+      settings.partners,
+      settings.readOnlyFolders
     );
 
     console.group(
       `Found ${result.compatibleWorkflows.length} starter workflows compatible with GHES:`
     );
     console.log(
-      result.compatibleWorkflows.map((x) => `${x.folder}/${x.id}`).join("\n")
+      result.compatibleWorkflows.map((x) => `\( {x.folder}/ \){x.id}`).join("\n")
     );
     console.groupEnd();
 
@@ -148,72 +176,55 @@ async function checkWorkflow(
       `Ignored ${result.incompatibleWorkflows.length} starter-workflows incompatible with GHES:`
     );
     console.log(
-      result.incompatibleWorkflows.map((x) => `${x.folder}/${x.id}`).join("\n")
+      result.incompatibleWorkflows.map((x) => `\( {x.folder}/ \){x.id}`).join("\n")
     );
     console.groupEnd();
 
     console.log("Switch to GHES branch");
     await exec("git", ["checkout", "ghes"]);
 
-    // In order to sync from main, we might need to remove some workflows, add some
-    // and modify others. The lazy approach is to delete all workflows first (except from read-only folders), and then
-    // just bring the compatible ones over from the main branch. We let git figure out
-    // whether it's a deletion, add, or modify and commit the new state.
-    console.log("Remove all workflows");
-    await exec("rm", ["-fr", ...settings.folders]);
+    console.log("Remove all modifiable workflows");
+    const modifiableFolders = settings.folders.filter((f) => !settings.readOnlyFolders.includes(f));
+    await exec("rm", ["-fr", ...modifiableFolders]);
     await exec("rm", ["-fr", "../../icons"]);
 
-    // Bring back the read-only folders
     console.log("Restore read-only folders");
-    for (let i = 0; i < settings.readOnlyFolders.length; i++) {
-      await exec("git", [
-        "checkout",
-        settings.readOnlyFolders[i]
-      ]);
+    for (const folder of settings.readOnlyFolders) {
+      await exec("git", ["checkout", "main", "--", folder]);
     }
 
-    console.log("Sync changes from main for compatible workflows");
-    await exec("git", [
-      "checkout",
-      "main",
-      "--",
-      ...Array.prototype.concat.apply(
-        [],
-        result.compatibleWorkflows.map((x) => {
-          const r = [];
-
-          // Don't touch read-only folders
-          if (!settings.readOnlyFolders.includes(x.folder)) {
-            r.push(join(x.folder, `${x.id}.yml`));
-            r.push(join(x.folder, "properties", `${x.id}.properties.json`));
-          };
-
-          if (x.iconType === "svg") {
-            r.push(join("../../icons", `${x.iconName}.svg`));
-          }
-
-          return r;
-        })
-      ),
-    ]);
-
-    // The v4 versions of upload and download artifact are not yet supported on GHES
-    console.group("Updating all compatible workflows to use v3 of the artifact actions");
+    console.log("Sync compatible workflows from main branch");
+    const pathsToRestore: string[] = [];
     for (const workflow of result.compatibleWorkflows) {
+      if (!settings.readOnlyFolders.includes(workflow.folder)) {
+        pathsToRestore.push(join(workflow.folder, `${workflow.id}.yml`));
+        pathsToRestore.push(join(workflow.folder, "properties", `${workflow.id}.properties.json`));
+      }
+
+      if (workflow.iconType === "svg" && workflow.iconName) {
+        pathsToRestore.push(join("../../icons", `${workflow.iconName}.svg`));
+      }
+    }
+
+    if (pathsToRestore.length > 0) {
+      await exec("git", ["checkout", "main", "--", ...pathsToRestore]);
+    }
+
+    console.group("Downgrade artifact actions from v4 to v3 in compatible workflows");
+    for (const workflow of result.compatibleWorkflows) {
+      if (settings.readOnlyFolders.includes(workflow.folder)) {
+        continue; // Do not modify read-only workflows
+      }
+
       const path = join(workflow.folder, `${workflow.id}.yml`);
-      console.log(`Updating ${path}`);
       const contents = await fs.readFile(path, "utf8");
 
       if (contents.includes("actions/upload-artifact@v4") || contents.includes("actions/download-artifact@v4")) {
-        console.log("Found v4 artifact actions, updating to v3");
-      } else {
-        continue;
+        console.log(`Updating ${path} to use v3 artifact actions`);
+        let updatedContents = contents.replace(/actions\/upload-artifact@v4/g, "actions/upload-artifact@v3");
+        updatedContents = updatedContents.replace(/actions\/download-artifact@v4/g, "actions/download-artifact@v3");
+        await fs.writeFile(path, updatedContents);
       }
-
-      let updatedContents = contents.replace(/actions\/upload-artifact@v4/g, "actions/upload-artifact@v3");
-      updatedContents = updatedContents.replace(/actions\/download-artifact@v4/g, "actions/download-artifact@v3");
-
-      await fs.writeFile(path, updatedContents);
     }
     console.groupEnd();
 
