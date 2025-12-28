@@ -1,10 +1,12 @@
-import { promises as fs } from "fs";
-import { safeLoad, safeDump } from "js-yaml";
-
 export async function rewriteWorkflow(
   path: string,
   transform: (wf: any) => any
 ) {
+  if (!path.endsWith(".yml") && !path.endsWith(".yaml")) {
+    console.warn(`Skipping non-workflow file: ${path}`);
+    return;
+  }
+
   const content = await fs.readFile(path, "utf8");
   const workflow = safeLoad(content);
 
@@ -16,23 +18,4 @@ export async function rewriteWorkflow(
   });
 
   await fs.writeFile(path, yaml, "utf8");
-}
-
-export function addPlaceholderStep(workflow: any) {
-  if (!workflow.jobs) return workflow;
-
-  for (const jobName of Object.keys(workflow.jobs)) {
-    const job = workflow.jobs[jobName] || {};
-    const steps = job.steps || [];
-
-    steps.push({
-      name: "Custom placeholder step",
-      run: "# TODO: add commands here",
-    });
-
-    job.steps = steps;
-    workflow.jobs[jobName] = job;
-  }
-
-  return workflow;
 }
