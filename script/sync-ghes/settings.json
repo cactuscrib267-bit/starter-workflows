@@ -8,7 +8,14 @@ export async function rewriteWorkflow(
   }
 
   const content = await fs.readFile(path, "utf8");
-  const workflow = safeLoad(content);
+
+  let workflow;
+  try {
+    workflow = safeLoad(content);
+  } catch (err) {
+    console.error(`Invalid YAML in ${path}`, err);
+    return;
+  }
 
   const updated = transform(workflow);
 
@@ -18,11 +25,4 @@ export async function rewriteWorkflow(
   });
 
   await fs.writeFile(path, yaml, "utf8");
-}
-let workflow;
-try {
-  workflow = safeLoad(content);
-} catch (err) {
-  console.error(`Invalid YAML in ${path}`, err);
-  return;
 }
