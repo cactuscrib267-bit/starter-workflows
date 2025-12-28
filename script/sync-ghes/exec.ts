@@ -49,14 +49,12 @@ async function checkWorkflows(
 
         let workflowProperties: WorkflowProperties;
         try {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
           workflowProperties = require(join(folder, "properties", `${workflowId}.properties.json`));
         } catch {
-          // Skip workflows without properties file
           continue;
         }
 
-        const iconName: string | undefined = workflowProperties.iconName;
+        const iconName = workflowProperties.iconName;
 
         const isPartnerWorkflow = workflowProperties.creator
           ? partnersSet.has(workflowProperties.creator.toLowerCase())
@@ -100,12 +98,13 @@ async function checkWorkflow(
     const workflow = safeLoad(workflowFileContent) as any;
 
     for (const job of Object.values(workflow.jobs || {})) {
-      // job is unknown structure → treat as any
       const j: any = job;
+
       for (const step of j.steps || []) {
         if (step.uses) {
           const [actionName] = String(step.uses).split("@");
           const actionNwo = actionName.split("/").slice(0, 2).join("/");
+
           if (!enabledActionsSet.has(actionNwo.toLowerCase())) {
             console.info(
               `Workflow ${workflowPath} uses '${actionName}' which is not supported for GHES.`
@@ -115,6 +114,7 @@ async function checkWorkflow(
         }
       }
     }
+
     return true;
   } catch (e) {
     console.error("Error while checking workflow", e);
@@ -124,7 +124,6 @@ async function checkWorkflow(
 
 (async function main() {
   try {
-    // Hard-coded settings based on the provided configuration
     const settings = {
       folders: ["../../ci", "../../automation", "../../code-scanning", "../../pages"],
       readOnlyFolders: ["../../pages"],
@@ -168,20 +167,12 @@ async function checkWorkflow(
       settings.readOnlyFolders
     );
 
-    console.group(
-      `Found ${result.compatibleWorkflows.length} starter workflows compatible with GHES:`
-    );
-    console.log(
-      result.compatibleWorkflows.map((x) => `${x.folder}/${x.id}`).join("\n")
-    );
+    console.group(`Found ${result.compatibleWorkflows.length} compatible workflows:`);
+    console.log(result.compatibleWorkflows.map((x) => `${x.folder}/${x.id}`).join("\n"));
     console.groupEnd();
 
-    console.group(
-      `Ignored ${result.incompatibleWorkflows.length} starter-workflows incompatible with GHES:`
-    );
-    console.log(
-      result.incompatibleWorkflows.map((x) => `${x.folder}/${x.id}`).join("\n")
-    );
+    console.group(`Ignored ${result.incompatibleWorkflows.length} incompatible workflows:`);
+    console.log(result.incompatibleWorkflows.map((x) => `${x.folder}/${x.id}`).join("\n"));
     console.groupEnd();
 
     console.log("Switch to GHES branch");
@@ -201,6 +192,7 @@ async function checkWorkflow(
 
     console.log("Sync compatible workflows from main branch");
     const pathsToRestore: string[] = [];
+
     for (const workflow of result.compatibleWorkflows) {
       if (!settings.readOnlyFolders.includes(workflow.folder)) {
         pathsToRestore.push(join(workflow.folder, `${workflow.id}.yml`));
@@ -218,13 +210,9 @@ async function checkWorkflow(
       await exec("git", ["checkout", "main", "--", ...pathsToRestore]);
     }
 
-    console.group(
-      "Downgrade artifact actions from v4 to v3 in compatible workflows"
-    );
+    console.group("Downgrade artifact actions from v4 to v3");
     for (const workflow of result.compatibleWorkflows) {
-      if (settings.readOnlyFolders.includes(workflow.folder)) {
-        continue; // Do not modify read-only workflows
-      }
+      if (settings.readOnlyFolders.includes(workflow.folder)) continue;
 
       const path = join(workflow.folder, `${workflow.id}.yml`);
       const contents = await fs.readFile(path, "utf8");
@@ -233,21 +221,15 @@ async function checkWorkflow(
         contents.includes("actions/upload-artifact@v4") ||
         contents.includes("actions/download-artifact@v4")
       ) {
-        console.log(`Updating ${path} to use v3 artifact actions`);
-        let updatedContents = contents.replace(
-          /actions\/upload-artifact@v4/g,
-          "actions/upload-artifact@v3"
-        );
-        updatedContents = updatedContents.replace(
-          /actions\/download-artifact@v4/g,
-          "actions/download-artifact@v3"
-        );
-        await fs.writeFile(path, updatedContents);
+        console.log(`Updating ${path}`);
+        let updated = contents.replace(/actions\/upload-artifact@v4/g, "actions/upload-artifact@v3");
+        updated = updated.replace(/actions\/download-artifact@v4/g, "actions/download-artifact@v3");
+        await fs.writeFile(path, updated);
       }
     }
     console.groupEnd();
   } catch (e) {
-    console.error("Unhandled error while syncing workflows", e);
+    console.error("Unhandled error", e);
     process.exitCode = 1;
   }
 })();
