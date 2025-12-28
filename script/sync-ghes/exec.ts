@@ -25,6 +25,49 @@ interface WorkflowsCheckResult {
   incompatibleWorkflows: WorkflowDesc[];
 }
 
+async function loadWorkflowProperties(folder: string, id: string) {
+  try {
+    return require(join(folder, "properties", `${id}.properties.json`)) as WorkflowProperties;
+  } catch {
+    return null;
+  }
+}
+
+async function checkWorkflow(
+  workflowPath: string,
+  enabledActions: string[]
+): Promise<boolean> {
+  const enabled = new Set(enabledActions.map((x) => x.toLowerCase()));
+
+  try {
+    const content = await fs.readFile(workflowPath, "utf8");
+    const workflow = safeLoad(content) as any;
+
+    for (const job of Object.values(workflow.jobs || {})) {
+      const steps = (job as any).steps || [];
+
+      for (const step of steps) {
+        if (step.uses) {
+          const [actionName] = String(step.uses).split("@");
+          const actionNwo = actionName.split("/").slice(0, 2).join("/");
+
+          if (!enabled.has(actionNwo.toLowerCase())) {
+            console.info(
+              `Workflow ${workflowPath} uses '${actionName}' which is not supported for GHES.`
+            );
+            return false;
+          }
+        }
+      }
+    }
+
+    return true;
+  } catch (err) {
+    console.error(`Error checking workflow ${workflowPath}`, err);
+    throw err;
+  }
+}
+
 async function checkWorkflows(
   folders: string[],
   enabledActions: string[],
@@ -36,90 +79,68 @@ async function checkWorkflows(
     incompatibleWorkflows: [],
   };
 
-  const partnersSet = new Set(partners.map((x) => x.toLowerCase()));
+  const partnerSet = new Set(partners.map((x) => x.toLowerCase()));
   const readOnlySet = new Set(readOnlyFolders);
 
   for (const folder of folders) {
-    const dir = await fs.readdir(folder, { withFileTypes: true });
+    const entries = await fs.readdir(folder, { withFileTypes: true });
 
-    for (const e of dir) {
-      if (e.isFile() && extname(e.name) === ".yml") {
-        const workflowFilePath = join(folder, e.name);
-        const workflowId = basename(e.name, extname(e.name));
+    for (const entry of entries) {
+      if (!entry.isFile() || extname(entry.name) !== ".yml") continue;
 
-        let workflowProperties: WorkflowProperties;
-        try {
-          workflowProperties = require(join(folder, "properties", `${workflowId}.properties.json`));
-        } catch {
-          continue;
-        }
+      const id = basename(entry.name, ".yml");
+      const workflowPath = join(folder, entry.name);
 
-        const iconName = workflowProperties.iconName;
+      const props = await loadWorkflowProperties(folder, id);
+      if (!props) continue;
 
-        const isPartnerWorkflow = workflowProperties.creator
-          ? partnersSet.has(workflowProperties.creator.toLowerCase())
-          : false;
+      const isPartner = props.creator
+        ? partnerSet.has(props.creator.toLowerCase())
+        : false;
 
-        const isReadOnlyFolder = readOnlySet.has(folder);
-        const isCodeScanningFolder = basename(folder) === "code-scanning";
+      const isReadOnly = readOnlySet.has(folder);
+      const isCodeScanning = basename(folder) === "code-scanning";
 
-        const enabled =
-          !isPartnerWorkflow &&
-          (workflowProperties.enterprise === true || !isCodeScanningFolder) &&
-          (isReadOnlyFolder || (await checkWorkflow(workflowFilePath, enabledActions)));
+      const enabled =
+        !isPartner &&
+        (props.enterprise === true || !isCodeScanning) &&
+        (isReadOnly || (await checkWorkflow(workflowPath, enabledActions)));
 
-        const workflowDesc: WorkflowDesc = {
-          folder,
-          id: workflowId,
-          iconName,
-          iconType: iconName && iconName.startsWith("octicon") ? "octicon" : "svg",
-        };
+      const desc: WorkflowDesc = {
+        folder,
+        id,
+        iconName: props.iconName,
+        iconType: props.iconName?.startsWith("octicon") ? "octicon" : "svg",
+      };
 
-        if (!enabled) {
-          result.incompatibleWorkflows.push(workflowDesc);
-        } else {
-          result.compatibleWorkflows.push(workflowDesc);
-        }
-      }
+      if (enabled) result.compatibleWorkflows.push(desc);
+      else result.incompatibleWorkflows.push(desc);
     }
   }
 
   return result;
 }
 
-async function checkWorkflow(
-  workflowPath: string,
-  enabledActions: string[]
-): Promise<boolean> {
-  const enabledActionsSet = new Set(enabledActions.map((x) => x.toLowerCase()));
+async function downgradeArtifactActions(workflows: WorkflowDesc[], readOnly: string[]) {
+  console.group("Downgrading artifact actions v4 → v3");
 
-  try {
-    const workflowFileContent = await fs.readFile(workflowPath, "utf8");
-    const workflow = safeLoad(workflowFileContent) as any;
+  for (const wf of workflows) {
+    if (readOnly.includes(wf.folder)) continue;
 
-    for (const job of Object.values(workflow.jobs || {})) {
-      const j: any = job;
+    const path = join(wf.folder, `${wf.id}.yml`);
+    const content = await fs.readFile(path, "utf8");
 
-      for (const step of j.steps || []) {
-        if (step.uses) {
-          const [actionName] = String(step.uses).split("@");
-          const actionNwo = actionName.split("/").slice(0, 2).join("/");
+    if (!content.includes("@v4")) continue;
 
-          if (!enabledActionsSet.has(actionNwo.toLowerCase())) {
-            console.info(
-              `Workflow ${workflowPath} uses '${actionName}' which is not supported for GHES.`
-            );
-            return false;
-          }
-        }
-      }
-    }
+    console.log(`Updating ${path}`);
 
-    return true;
-  } catch (e) {
-    console.error("Error while checking workflow", e);
-    throw e;
+    let updated = content.replace(/actions\/upload-artifact@v4/g, "actions/upload-artifact@v3");
+    updated = updated.replace(/actions\/download-artifact@v4/g, "actions/download-artifact@v3");
+
+    await fs.writeFile(path, updated);
   }
+
+  console.groupEnd();
 }
 
 (async function main() {
@@ -167,69 +188,50 @@ async function checkWorkflow(
       settings.readOnlyFolders
     );
 
-    console.group(`Found ${result.compatibleWorkflows.length} compatible workflows:`);
+    console.group(`Compatible workflows (${result.compatibleWorkflows.length})`);
     console.log(result.compatibleWorkflows.map((x) => `${x.folder}/${x.id}`).join("\n"));
     console.groupEnd();
 
-    console.group(`Ignored ${result.incompatibleWorkflows.length} incompatible workflows:`);
+    console.group(`Incompatible workflows (${result.incompatibleWorkflows.length})`);
     console.log(result.incompatibleWorkflows.map((x) => `${x.folder}/${x.id}`).join("\n"));
     console.groupEnd();
 
-    console.log("Switch to GHES branch");
+    console.log("Switching to GHES branch");
     await exec("git", ["checkout", "ghes"]);
 
-    console.log("Remove all modifiable workflows");
-    const modifiableFolders = settings.folders.filter(
+    console.log("Removing modifiable workflows");
+    const modifiable = settings.folders.filter(
       (f) => !settings.readOnlyFolders.includes(f)
     );
-    await exec("rm", ["-fr", ...modifiableFolders]);
+    await exec("rm", ["-fr", ...modifiable]);
     await exec("rm", ["-fr", "../../icons"]);
 
-    console.log("Restore read-only folders");
+    console.log("Restoring read-only folders");
     for (const folder of settings.readOnlyFolders) {
       await exec("git", ["checkout", "main", "--", folder]);
     }
 
-    console.log("Sync compatible workflows from main branch");
-    const pathsToRestore: string[] = [];
+    console.log("Restoring compatible workflows");
+    const restorePaths: string[] = [];
 
-    for (const workflow of result.compatibleWorkflows) {
-      if (!settings.readOnlyFolders.includes(workflow.folder)) {
-        pathsToRestore.push(join(workflow.folder, `${workflow.id}.yml`));
-        pathsToRestore.push(
-          join(workflow.folder, "properties", `${workflow.id}.properties.json`)
-        );
+    for (const wf of result.compatibleWorkflows) {
+      if (!settings.readOnlyFolders.includes(wf.folder)) {
+        restorePaths.push(join(wf.folder, `${wf.id}.yml`));
+        restorePaths.push(join(wf.folder, "properties", `${wf.id}.properties.json`));
       }
 
-      if (workflow.iconType === "svg" && workflow.iconName) {
-        pathsToRestore.push(join("../../icons", `${workflow.iconName}.svg`));
+      if (wf.iconType === "svg" && wf.iconName) {
+        restorePaths.push(join("../../icons", `${wf.iconName}.svg`));
       }
     }
 
-    if (pathsToRestore.length > 0) {
-      await exec("git", ["checkout", "main", "--", ...pathsToRestore]);
+    if (restorePaths.length > 0) {
+      await exec("git", ["checkout", "main", "--", ...restorePaths]);
     }
 
-    console.group("Downgrade artifact actions from v4 to v3");
-    for (const workflow of result.compatibleWorkflows) {
-      if (settings.readOnlyFolders.includes(workflow.folder)) continue;
-
-      const path = join(workflow.folder, `${workflow.id}.yml`);
-      const contents = await fs.readFile(path, "utf8");
-
-      if (
-        contents.includes("actions/upload-artifact@v4") ||
-        contents.includes("actions/download-artifact@v4")
-      ) {
-        console.log(`Updating ${path}`);
-        let updated = contents.replace(/actions\/upload-artifact@v4/g, "actions/upload-artifact@v3");
-        updated = updated.replace(/actions\/download-artifact@v4/g, "actions/download-artifact@v3");
-        await fs.writeFile(path, updated);
-      }
-    }
-    console.groupEnd();
-  } catch (e) {
-    console.error("Unhandled error", e);
+    await downgradeArtifactActions(result.compatibleWorkflows, settings.readOnlyFolders);
+  } catch (err) {
+    console.error("Fatal error", err);
     process.exitCode = 1;
   }
 })();
