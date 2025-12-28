@@ -1,9 +1,6 @@
 import { promises as fs } from "fs";
 import { join, basename, extname } from "path";
-import { safeLoad, safeDump } from "js-yaml";
-
-/* ───────── 2) CODEOWNERS types + generator ───────── */
-
+import { safeLoad, safeDump } from "js-yaml"
 export interface CodeOwnerRule {
   pattern: string;
   teams: string[];
