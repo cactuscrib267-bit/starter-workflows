@@ -1,26 +1,38 @@
 import { promises as fs } from "fs";
-import { join } from "path";
-import { CodeOwnersConfig } from "./codeowners-types";
+import { safeLoad, safeDump } from "js-yaml";
 
-export async function generateCodeowners(
-  configPath: string,
-  outputPath: string
+export async function rewriteWorkflow(
+  path: string,
+  transform: (wf: any) => any
 ) {
-  const json = await fs.readFile(configPath, "utf8");
-  const config = JSON.parse(json) as CodeOwnersConfig;
+  const content = await fs.readFile(path, "utf8");
+  const workflow = safeLoad(content);
 
-  const lines: string[] = [];
+  const updated = transform(workflow);
 
-  lines.push("# Auto-generated CODEOWNERS. Do not edit manually.");
-  lines.push("");
+  const yaml = safeDump(updated, {
+    lineWidth: -1,
+    noRefs: true,
+  });
 
-  for (const rule of config.owners) {
-    const teams = rule.teams.join(" ");
-    lines.push(`${rule.pattern} ${teams}`);
+  await fs.writeFile(path, yaml, "utf8");
+}
+
+export function addPlaceholderStep(workflow: any) {
+  if (!workflow.jobs) return workflow;
+
+  for (const jobName of Object.keys(workflow.jobs)) {
+    const job = workflow.jobs[jobName] || {};
+    const steps = job.steps || [];
+
+    steps.push({
+      name: "Custom placeholder step",
+      run: "# TODO: add commands here",
+    });
+
+    job.steps = steps;
+    workflow.jobs[jobName] = job;
   }
 
-  lines.push("");
-
-  await fs.mkdir(join(outputPath, ".."), { recursive: true });
-  await fs.writeFile(outputPath, lines.join("\n"), "utf8");
+  return workflow;
 }
